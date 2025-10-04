@@ -1,4 +1,4 @@
-Conexão com PostgreSQL usando pg.Pool
+// Conexão com PostgreSQL usando pg.Pool
 const { Pool } = require("pg");
 require("dotenv").config();
 
