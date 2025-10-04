@@ -1,0 +1,27 @@
+{
+  "name": "telemetria-api",
+  "version": "1.0.0",
+  "description": "API de telemetria para monitoramento da engorda de tilápias (Node.js + Express + PostgreSQL)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "telemetria",
+    "iot",
+    "aquicultura",
+    "tilapia",
+    "nodejs",
+    "postgresql"
+  ],
+  "author": "Renan Aguiar",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0",
+    "pg": "^8.11.5"
+  }
+}
