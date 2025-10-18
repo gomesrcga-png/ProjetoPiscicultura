@@ -132,3 +132,6 @@ initDB()
     console.error("Falha ao inicializar banco de dados:", err);
     process.exit(1);
   });
+app.get('/teste', (req, res) => {
+  res.send('Temperatura simulada: 27.5°C');
+});
