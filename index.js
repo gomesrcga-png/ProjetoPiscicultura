@@ -12,10 +12,10 @@ require("dotenv").config();
 const app = express();
 
 // Middlewares de segurança e parsing
-app.use(helmet());             // cabeçalhos de segurança HTTP
-app.use(cors());               // CORS (API pública - ajuste conforme necessário)
-app.use(express.json());       // parse JSON no body
-app.use(morgan("combined"));   // logs de requisição
+app.use(helmet());             
+app.use(cors());               
+app.use(express.json());       
+app.use(morgan("combined"));   
 
 // Função de inicialização do DB: cria tabela se não existir (ajuda no deploy)
 async function initDB() {
@@ -35,31 +35,28 @@ async function initDB() {
 
 // Endpoint de saúde
 app.get("/", (req, res) => {
+  console.log("[LOG] Requisição recebida em / de", req.ip);
   res.send("API de Telemetria rodando ✅");
 });
 
 // Inserir leitura (POST /leituras)
-// Exemplo body JSON: { "dispositivo_id":"tanque01", "temperatura": 27.4 }
 app.post("/leituras", async (req, res) => {
+  console.log("[LOG] Requisição POST recebida em /leituras de", req.ip, "Body:", req.body);
   try {
     const { dispositivo_id, temperatura } = req.body;
 
-    // Validação básica (evita erros e entradas indevidas)
     if (!dispositivo_id || typeof dispositivo_id !== "string") {
       return res.status(400).json({ error: "dispositivo_id inválido" });
     }
-    // aceita number ou string que parseFloat converte
     const tempNum = parseFloat(temperatura);
     if (Number.isNaN(tempNum)) {
       return res.status(400).json({ error: "temperatura inválida" });
     }
 
-    // Insere no banco de forma parametrizada (prevenção SQL injection)
     const result = await pool.query(
       `INSERT INTO leituras (dispositivo_id, temperatura) VALUES ($1, $2) RETURNING *;`,
       [dispositivo_id, tempNum]
     );
-    // Retorna a linha criada
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error("Erro POST /leituras:", err);
@@ -69,6 +66,7 @@ app.post("/leituras", async (req, res) => {
 
 // Buscar últimas leituras de um dispositivo (GET /leituras/:id?limit=50)
 app.get("/leituras/:id", async (req, res) => {
+  console.log(`[LOG] Requisição GET recebida em /leituras/${req.params.id}?limit=${req.query.limit} de`, req.ip);
   try {
     const dispositivo = req.params.id;
     const limit = Math.min(parseInt(req.query.limit) || 50, 1000); // limite de segurança
@@ -88,8 +86,8 @@ app.get("/leituras/:id", async (req, res) => {
 });
 
 // Buscar última leitura (GET /leituras/latest/:id?format=plain)
-// Se ?format=plain então retorna "temperatura;timestamp" (útil para App Inventor sem JSON)
 app.get("/leituras/latest/:id", async (req, res) => {
+  console.log(`[LOG] Requisição GET recebida em /leituras/latest/${req.params.id}?format=${req.query.format} de`, req.ip);
   try {
     const dispositivo = req.params.id;
     const result = await pool.query(
@@ -108,12 +106,13 @@ app.get("/leituras/latest/:id", async (req, res) => {
     const row = result.rows[0];
 
     if (req.query.format === "plain") {
-      // resposta simples: "27.40;2025-09-27T09:00:00Z"
-      return res.send(`${row.temperatura};${row.data_hora.toISOString()}`);
+      res.send(`${row.temperatura};${row.data_hora.toISOString()}`);
+      console.log("[LOG] Resposta enviada:", `${row.temperatura};${row.data_hora.toISOString()}`);
+      return;
     }
 
-    // padrão: JSON completo
     res.json(row);
+    console.log("[LOG] Resposta enviada (json):", row);
   } catch (err) {
     console.error("Erro GET /leituras/latest/:id", err);
     res.status(500).json({ error: "erro interno ao buscar última leitura" });
@@ -133,5 +132,6 @@ initDB()
     process.exit(1);
   });
 app.get('/teste', (req, res) => {
+  console.log("[LOG] Requisição recebida em /teste de", req.ip);
   res.send('Temperatura simulada: 27.5°C');
 });
