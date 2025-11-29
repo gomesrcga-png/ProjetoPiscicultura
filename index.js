@@ -11,20 +11,20 @@ require("dotenv").config();
 
 const app = express();
 
-// Middlewares de segurança e parsing
+// Middlewares de segurança
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(morgan("combined"));
 
-// 👉 ROTA DE RECOMENDAÇÃO (importada) - importar apenas UMA vez
-const recomendaRouter = require('./recomenda');
-app.use('/recomendacoes', recomendaRouter);
+// Rota de recomendações (recomenda.js deve exportar somente "router")
+const recomendaRouter = require("./recomenda");
+app.use("/recomendacoes", recomendaRouter);
 
 // ---------------------------------------------------------------------------
 // 🟩 ROTA DE TESTE DE RECOMENDAÇÃO (mock fixo)
 // ---------------------------------------------------------------------------
-app.get('/teste_recomenda', (req, res) => {
+app.get("/teste_recomenda", (req, res) => {
   console.log("[LOG] Requisição recebida em /teste_recomenda de", req.ip);
 
   res.status(200).json({
@@ -32,174 +32,188 @@ app.get('/teste_recomenda', (req, res) => {
     ox_media: 4.2,
     ph_media: 7.3,
     recomendacoes: [
-      { tipo: 'aeracao', texto: 'Oxigênio baixo — acionar aeradores.' },
-      { tipo: 'racao', texto: 'Reduzir ração 20% até normalizar OD.' }
+      { tipo: "aeracao", texto: "Oxigênio baixo — acionar aeradores." },
+      { tipo: "racao", texto: "Reduzir ração 20% até normalizar OD." },
     ],
-    motivos: [
-      'Temp média 28.4°C',
-      'O2 médio 4.2 mg/L'
-    ]
+    motivos: ["Temp média 28.4°C", "O2 médio 4.2 mg/L"],
   });
 });
 
 // ---------------------------------------------------------------------------
-// Função de inicialização do DB: cria tabela se não existir
+// 🟦 ENDPOINT TEMPORÁRIO DE MIGRAÇÃO (RODAR 1 VEZ)
+// ---------------------------------------------------------------------------
+// Após a migração estar OK, APAGUE ESTE BLOCO + a variável MIGRATE_SECRET
+app.get("/__migrate_db", async (req, res) => {
+  try {
+    const secret = process.env.MIGRATE_SECRET || "";
+    const key = req.query.secret;
+
+    if (!key || key !== secret) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const sql = `
+      CREATE TABLE IF NOT EXISTS leituras (
+        id SERIAL PRIMARY KEY,
+        dispositivo_id VARCHAR(100) NOT NULL,
+        temperatura DECIMAL(7,3) NOT NULL,
+        data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_leituras_dispositivo_datahora
+        ON leituras(dispositivo_id, data_hora DESC);
+
+      ALTER TABLE leituras
+        ADD COLUMN IF NOT EXISTS oxigenio DECIMAL(7,3),
+        ADD COLUMN IF NOT EXISTS ph DECIMAL(7,3);
+
+      CREATE TABLE IF NOT EXISTS recomendacoes (
+        id SERIAL PRIMARY KEY,
+        dispositivo_id VARCHAR(100) NOT NULL,
+        recomendacao JSONB NOT NULL,
+        motivo TEXT,
+        data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_recomendacoes_dispositivo
+        ON recomendacoes(dispositivo_id, data_hora DESC);
+    `;
+
+    await pool.query(sql);
+
+    console.log("[MIGRATE] Migração executada com sucesso.");
+    return res.json({ ok: true, msg: "Migração executada com sucesso." });
+  } catch (err) {
+    console.error("[MIGRATE] Erro na migração:", err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Função de inicialização do DB (garante tabelas mínimas)
 // ---------------------------------------------------------------------------
 async function initDB() {
-  const createTableQuery = `
+  const sql = `
     CREATE TABLE IF NOT EXISTS leituras (
       id SERIAL PRIMARY KEY,
       dispositivo_id VARCHAR(100) NOT NULL,
-      temperatura DECIMAL(5,2) NOT NULL,
+      temperatura DECIMAL(7,3) NOT NULL,
       data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE INDEX IF NOT EXISTS idx_leituras_dispositivo_datahora
       ON leituras(dispositivo_id, data_hora DESC);
-
-    CREATE TABLE IF NOT EXISTS recomendacoes (
-      id SERIAL PRIMARY KEY,
-      dispositivo_id VARCHAR(100) NOT NULL,
-      recomendacao JSONB NOT NULL,
-      motivo TEXT,
-      data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_recomendacoes_dispositivo
-      ON recomendacoes(dispositivo_id, data_hora DESC);
   `;
 
-  await pool.query(createTableQuery);
-  console.log("Tabelas verificadas/criadas.");
+  await pool.query(sql);
+  console.log("Tabelas básicas verificadas/criadas.");
 }
 
 // ---------------------------------------------------------------------------
 // Endpoint de saúde
 // ---------------------------------------------------------------------------
 app.get("/", (req, res) => {
-  console.log("[LOG] Requisição recebida em / de", req.ip);
   res.send("API de Telemetria rodando ✅");
 });
 
 // ---------------------------------------------------------------------------
-// Inserir leitura (POST /leituras)
+// Inserir leitura
 // ---------------------------------------------------------------------------
 app.post("/leituras", async (req, res) => {
-  console.log("[LOG] Requisição POST recebida em /leituras de", req.ip, "Body:", req.body);
-
   try {
-    const { dispositivo_id, temperatura } = req.body;
+    const { dispositivo_id, temperatura, oxigenio, ph } = req.body;
 
-    // Validação simples
-    if (!dispositivo_id || typeof dispositivo_id !== "string") {
+    if (!dispositivo_id) {
       return res.status(400).json({ error: "dispositivo_id inválido" });
     }
 
-    const tempNum = parseFloat(temperatura);
-    if (Number.isNaN(tempNum)) {
-      return res.status(400).json({ error: "temperatura inválida" });
-    }
+    const temp = parseFloat(temperatura);
+    const ox = oxigenio !== undefined ? parseFloat(oxigenio) : null;
+    const phValue = ph !== undefined ? parseFloat(ph) : null;
 
     const result = await pool.query(
-      `INSERT INTO leituras (dispositivo_id, temperatura) 
-       VALUES ($1, $2) RETURNING *;`,
-      [dispositivo_id, tempNum]
+      `INSERT INTO leituras (dispositivo_id, temperatura, oxigenio, ph)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *;`,
+      [dispositivo_id, temp, ox, phValue]
     );
 
     res.status(201).json(result.rows[0]);
-
   } catch (err) {
     console.error("Erro POST /leituras:", err);
-    res.status(500).json({ error: "erro interno ao inserir leitura" });
+    res.status(500).json({ error: "erro interno" });
   }
 });
 
 // ---------------------------------------------------------------------------
-// Buscar últimas leituras (GET /leituras/:id?limit=50)
+// Buscar leituras
 // ---------------------------------------------------------------------------
 app.get("/leituras/:id", async (req, res) => {
-  console.log(`[LOG] GET /leituras/${req.params.id}?limit=${req.query.limit} de`, req.ip);
-
   try {
-    const dispositivo = req.params.id;
+    const dispositivo_id = req.params.id;
     const limit = Math.min(parseInt(req.query.limit) || 50, 1000);
 
     const result = await pool.query(
-      `SELECT id, dispositivo_id, temperatura, data_hora
+      `SELECT id, dispositivo_id, temperatura, oxigenio, ph, data_hora
        FROM leituras
        WHERE dispositivo_id = $1
        ORDER BY data_hora DESC
        LIMIT $2;`,
-      [dispositivo, limit]
+      [dispositivo_id, limit]
     );
 
     res.json(result.rows);
-
   } catch (err) {
-    console.error("Erro GET /leituras/:id", err);
-    res.status(500).json({ error: "erro interno ao buscar leituras" });
+    console.error("Erro GET /leituras:", err);
+    res.status(500).json({ error: "erro interno" });
   }
 });
 
 // ---------------------------------------------------------------------------
-// Buscar última leitura (GET /leituras/latest/:id?format=plain)
+// Última leitura
 // ---------------------------------------------------------------------------
 app.get("/leituras/latest/:id", async (req, res) => {
-  console.log(`[LOG] GET /leituras/latest/${req.params.id}?format=${req.query.format} de`, req.ip);
-
   try {
-    const dispositivo = req.params.id;
+    const dispositivo_id = req.params.id;
 
     const result = await pool.query(
-      `SELECT id, dispositivo_id, temperatura, data_hora
+      `SELECT id, dispositivo_id, temperatura, oxigenio, ph, data_hora
        FROM leituras
        WHERE dispositivo_id = $1
        ORDER BY data_hora DESC
        LIMIT 1;`,
-      [dispositivo]
+      [dispositivo_id]
     );
 
-    if (result.rowCount === 0) {
+    if (result.rowCount === 0)
       return res.status(404).json({ error: "nenhuma leitura encontrada" });
-    }
 
     const row = result.rows[0];
 
     if (req.query.format === "plain") {
-      const resposta = `${row.temperatura};${row.data_hora.toISOString()}`;
-      console.log("[LOG] Resposta enviada:", resposta);
-      return res.send(resposta);
+      return res.send(
+        `${row.temperatura};${row.oxigenio};${row.ph};${row.data_hora.toISOString()}`
+      );
     }
 
-    console.log("[LOG] Resposta enviada (json):", row);
     res.json(row);
-
   } catch (err) {
-    console.error("Erro GET /leituras/latest/:id", err);
-    res.status(500).json({ error: "erro interno ao buscar última leitura" });
+    console.error("Erro GET /latest:", err);
+    res.status(500).json({ error: "erro interno" });
   }
 });
 
 // ---------------------------------------------------------------------------
-// Rota de teste simples
-// ---------------------------------------------------------------------------
-app.get('/teste', (req, res) => {
-  console.log("[LOG] Requisição recebida em /teste de", req.ip);
-  res.send('Temperatura simulada: 27.5°C');
-});
-
-// ---------------------------------------------------------------------------
-// Inicializa DB e sobe servidor
+// Inicialização
 // ---------------------------------------------------------------------------
 const port = process.env.PORT || 10000;
 
 initDB()
   .then(() => {
-    app.listen(port, () => {
-      console.log(`API rodando na porta ${port}`);
-    });
+    app.listen(port, () => console.log(`API rodando na porta ${port}`));
   })
   .catch((err) => {
-    console.error("Falha ao inicializar banco de dados:", err);
+    console.error("Falha ao inicializar DB:", err);
     process.exit(1);
   });
+
