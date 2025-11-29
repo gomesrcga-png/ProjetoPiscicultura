@@ -1,3 +1,5 @@
+const recomendaRouter = require('./recomenda');
+
 // index.js
 // API de Telemetria (Node.js + Express + PostgreSQL)
 
@@ -16,6 +18,10 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 app.use(morgan("combined"));
+
+// 👉 ROTA DE RECOMENDAÇÃO (importada)
+const recomendaRouter = require('./recomenda');
+app.use('/recomendacoes', recomendaRouter);
 
 // ---------------------------------------------------------------------------
 // 🟩 ROTA DE TESTE DE RECOMENDAÇÃO (mock fixo)
