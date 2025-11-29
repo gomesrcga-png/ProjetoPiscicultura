@@ -1,128 +1,214 @@
-// recomenda.js
-// Rota de recomendações simples baseada em médias das últimas 24h.
-// Requisitos: pool do pg (arquivo db.js já existente)
+// index.js
+// API de Telemetria (Node.js + Express + PostgreSQL)
 
-const express = require('express');
-const router = express.Router();
-const pool = require('./db');
+// Dependências principais
+const express = require("express");
+const pool = require("./db");
+const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
+require("dotenv").config();
 
-// Configurações (poderiam vir de env/config)
-const WINDOW_SQL = "now() - interval '24 hours'"; // ou '1 day'
-const TEMP_LOW = 24.0;
-const TEMP_HIGH = 30.0;
-const OXIGENIO_MIN = 5.0;
-const PH_MIN = 6.5;
-const PH_MAX = 9.0;
+const app = express();
 
-// Validador simples para id (ajuste se seu id não for inteiro)
-function validateId(id) {
-  const n = Number(id);
-  return Number.isInteger(n) && n > 0;
+// Middlewares de segurança e parsing
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+app.use(morgan("combined"));
+
+// 👉 ROTA DE RECOMENDAÇÃO (importada) — precisa existir como recomenda.js no mesmo diretório
+const recomendaRouter = require('./recomenda');
+app.use('/recomendacoes', recomendaRouter);
+
+// ---------------------------------------------------------------------------
+// 🟩 ROTA DE TESTE DE RECOMENDAÇÃO (mock fixo)
+// ---------------------------------------------------------------------------
+app.get('/teste_recomenda', (req, res) => {
+  console.log("[LOG] Requisição recebida em /teste_recomenda de", req.ip);
+
+  res.status(200).json({
+    temp_media: 28.4,
+    ox_media: 4.2,
+    ph_media: 7.3,
+    recomendacoes: [
+      { tipo: 'aeracao', texto: 'Oxigênio baixo — acionar aeradores.' },
+      { tipo: 'racao', texto: 'Reduzir ração 20% até normalizar OD.' }
+    ],
+    motivos: [
+      'Temp média 28.4°C',
+      'O2 médio 4.2 mg/L'
+    ]
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Função de inicialização do DB: cria tabelas e colunas se não existirem
+// ---------------------------------------------------------------------------
+async function initDB() {
+  const createTableQuery = `
+    -- tabela principal de leituras
+    CREATE TABLE IF NOT EXISTS leituras (
+      id SERIAL PRIMARY KEY,
+      dispositivo_id VARCHAR(100) NOT NULL,
+      temperatura DECIMAL(7,3) NOT NULL,
+      data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_leituras_dispositivo_datahora
+      ON leituras(dispositivo_id, data_hora DESC);
+
+    -- garantir colunas extras sem destruir dados
+    ALTER TABLE leituras
+      ADD COLUMN IF NOT EXISTS oxigenio DECIMAL(7,3),
+      ADD COLUMN IF NOT EXISTS ph DECIMAL(7,3);
+
+    -- tabela de recomendações
+    CREATE TABLE IF NOT EXISTS recomendacoes (
+      id SERIAL PRIMARY KEY,
+      dispositivo_id VARCHAR(100) NOT NULL,
+      recomendacao JSONB NOT NULL,
+      motivo TEXT,
+      data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recomendacoes_dispositivo
+      ON recomendacoes(dispositivo_id, data_hora DESC);
+  `;
+
+  await pool.query(createTableQuery);
+  console.log("Tabelas e colunas verificadas/criadas.");
 }
 
-router.get('/:dispositivo_id', async (req, res) => {
-  const id = req.params.dispositivo_id;
+// ---------------------------------------------------------------------------
+// Endpoint de saúde
+// ---------------------------------------------------------------------------
+app.get("/", (req, res) => {
+  console.log("[LOG] Requisição recebida em / de", req.ip);
+  res.send("API de Telemetria rodando ✅");
+});
 
-  if (!validateId(id)) {
-    return res.status(400).json({ error: 'dispositivo_id inválido' });
-  }
+// ---------------------------------------------------------------------------
+// Inserir leitura (POST /leituras)
+// ---------------------------------------------------------------------------
+app.post("/leituras", async (req, res) => {
+  console.log("[LOG] Requisição POST recebida em /leituras de", req.ip, "Body:", req.body);
 
   try {
-    // consulta as médias das últimas 24h
-    const sql = `
-      SELECT AVG(temperatura) AS temp_media,
-             AVG(oxigenio) AS ox_media,
-             AVG(ph) AS ph_media
-      FROM leituras
-      WHERE dispositivo_id = $1
-        AND data_hora > ${WINDOW_SQL};
-    `;
-    const q = await pool.query(sql, [id]);
-    const row = q.rows[0];
+    const { dispositivo_id, temperatura, oxigenio, ph } = req.body;
 
-    if (!row || row.temp_media === null) {
-      // Sem leituras recentes
-      const payload = {
-        temp_media: null,
-        ox_media: null,
-        ph_media: null,
-        recomendacoes: [
-          { tipo: 'info', texto: 'Sem leituras recentes. Verifique o sensor ou envie leituras de teste.' }
-        ],
-        motivos: []
-      };
-      // opcional: gravar evento de "sem leituras" (não obrigatório)
-      return res.json(payload);
+    if (!dispositivo_id || typeof dispositivo_id !== "string") {
+      return res.status(400).json({ error: "dispositivo_id inválido" });
     }
 
-    // Converter de forma segura (pg retorna numerics como string)
-    const temp = row.temp_media !== null ? parseFloat(row.temp_media) : null;
-    const ox = row.ox_media !== null ? parseFloat(row.ox_media) : null;
-    const ph = row.ph_media !== null ? parseFloat(row.ph_media) : null;
-
-    const recomendacoes = [];
-    const motivos = [];
-
-    // Regras de recomendação (mesma lógica do original)
-    if (temp !== null) {
-      if (temp < TEMP_LOW) {
-        recomendacoes.push({ tipo: 'alimentacao', texto: 'Diminuir alimentação — temperatura média baixa.' });
-        motivos.push(`Temp média ${temp.toFixed(2)}°C`);
-      } else if (temp <= TEMP_HIGH) {
-        recomendacoes.push({ tipo: 'alimentacao', texto: 'Manter alimentação padrão — temperatura dentro do intervalo.' });
-      } else {
-        recomendacoes.push({ tipo: 'aeracao', texto: 'Temperatura alta — aumentar aeração e reduzir ração.' });
-        motivos.push(`Temp média ${temp.toFixed(2)}°C`);
-      }
+    const tempNum = parseFloat(temperatura);
+    if (Number.isNaN(tempNum)) {
+      return res.status(400).json({ error: "temperatura inválida" });
     }
 
-    if (ox !== null && ox < OXIGENIO_MIN) {
-      recomendacoes.push({ tipo: 'aeracao', texto: 'Oxigênio dissolvido baixo — acionar aeradores.' });
-      motivos.push(`O2 médio ${ox.toFixed(2)} mg/L`);
-    }
+    const oxNum = oxigenio !== undefined ? parseFloat(oxigenio) : null;
+    const phNum = ph !== undefined ? parseFloat(ph) : null;
 
-    if (ph !== null && (ph < PH_MIN || ph > PH_MAX)) {
-      recomendacoes.push({ tipo: 'qualidade', texto: `pH ${ph.toFixed(2)} fora do intervalo ideal (${PH_MIN}-${PH_MAX}).` });
-      motivos.push(`pH médio ${ph.toFixed(2)}`);
-    }
+    const result = await pool.query(
+      `INSERT INTO leituras (dispositivo_id, temperatura, oxigenio, ph) 
+       VALUES ($1, $2, $3, $4) RETURNING *;`,
+      [dispositivo_id, tempNum, oxNum, phNum]
+    );
 
-    // Sugestão de ração
-    if (temp !== null && temp >= 25 && temp <= 28 && (ox === null || ox >= OXIGENIO_MIN)) {
-      recomendacoes.push({ tipo: 'racao', texto: 'Ração A (proteína padrão) recomendada — condições favoráveis.' });
-    } else if (temp !== null && temp > 28) {
-      recomendacoes.push({ tipo: 'racao', texto: 'Considerar ração com menor densidade energética e reduzir frequência.' });
-    }
+    res.status(201).json(result.rows[0]);
 
-    const payload = {
-      temp_media: temp,
-      ox_media: ox,
-      ph_media: ph,
-      recomendacoes,
-      motivos
-    };
-
-    // Persistir registro: não bloqueante (fire-and-forget) — tratamos erros localmente
-    (async () => {
-      try {
-        const insertSql = `
-          INSERT INTO recomendacoes (dispositivo_id, recomendacao, motivo, created_at)
-          VALUES ($1, $2::jsonb, $3, now())
-        `;
-        // grava apenas se houver recomendações / motivos (opcional)
-        const recomendacaoJson = JSON.stringify(recomendacoes);
-        const motivoStr = motivos.join('; ');
-        await pool.query(insertSql, [id, recomendacaoJson, motivoStr]);
-      } catch (err) {
-        // Loga, mas não interrompe a resposta ao cliente
-        console.error('Erro ao salvar recomendação (background):', err);
-      }
-    })();
-
-    return res.json(payload);
   } catch (err) {
-    console.error('Erro /recomendacoes:', err);
-    return res.status(500).json({ error: 'erro interno' });
+    console.error("Erro POST /leituras:", err);
+    res.status(500).json({ error: "erro interno ao inserir leitura" });
   }
 });
 
-module.exports = router;
+// ---------------------------------------------------------------------------
+// Buscar últimas leituras (GET /leituras/:id?limit=50)
+// ---------------------------------------------------------------------------
+app.get("/leituras/:id", async (req, res) => {
+  console.log(`[LOG] GET /leituras/${req.params.id}?limit=${req.query.limit} de`, req.ip);
+
+  try {
+    const dispositivo = req.params.id;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 1000);
+
+    const result = await pool.query(
+      `SELECT id, dispositivo_id, temperatura, oxigenio, ph, data_hora
+       FROM leituras
+       WHERE dispositivo_id = $1
+       ORDER BY data_hora DESC
+       LIMIT $2;`,
+      [dispositivo, limit]
+    );
+
+    res.json(result.rows);
+
+  } catch (err) {
+    console.error("Erro GET /leituras/:id", err);
+    res.status(500).json({ error: "erro interno ao buscar leituras" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Buscar última leitura (GET /leituras/latest/:id?format=plain)
+// ---------------------------------------------------------------------------
+app.get("/leituras/latest/:id", async (req, res) => {
+  console.log(`[LOG] GET /leituras/latest/${req.params.id}?format=${req.query.format} de`, req.ip);
+
+  try {
+    const dispositivo = req.params.id;
+
+    const result = await pool.query(
+      `SELECT id, dispositivo_id, temperatura, oxigenio, ph, data_hora
+       FROM leituras
+       WHERE dispositivo_id = $1
+       ORDER BY data_hora DESC
+       LIMIT 1;`,
+      [dispositivo]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "nenhuma leitura encontrada" });
+    }
+
+    const row = result.rows[0];
+
+    if (req.query.format === "plain") {
+      const resposta = `${row.temperatura};${row.oxigenio};${row.ph};${row.data_hora.toISOString()}`;
+      console.log("[LOG] Resposta enviada:", resposta);
+      return res.send(resposta);
+    }
+
+    console.log("[LOG] Resposta enviada (json):", row);
+    res.json(row);
+
+  } catch (err) {
+    console.error("Erro GET /leituras/latest/:id", err);
+    res.status(500).json({ error: "erro interno ao buscar última leitura" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Rota de teste simples
+// ---------------------------------------------------------------------------
+app.get('/teste', (req, res) => {
+  console.log("[LOG] Requisição recebida em /teste de", req.ip);
+  res.send('Temperatura simulada: 27.5°C');
+});
+
+// ---------------------------------------------------------------------------
+// Inicializa DB e sobe servidor
+// ---------------------------------------------------------------------------
+const port = process.env.PORT || 10000;
+
+initDB()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`API rodando na porta ${port}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Falha ao inicializar banco de dados:", err);
+    process.exit(1);
+  });
