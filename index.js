@@ -1,5 +1,3 @@
-const recomendaRouter = require('./recomenda');
-
 // index.js
 // API de Telemetria (Node.js + Express + PostgreSQL)
 
@@ -19,7 +17,7 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan("combined"));
 
-// 👉 ROTA DE RECOMENDAÇÃO (importada)
+// 👉 ROTA DE RECOMENDAÇÃO (importada) - importar apenas UMA vez
 const recomendaRouter = require('./recomenda');
 app.use('/recomendacoes', recomendaRouter);
 
@@ -58,6 +56,17 @@ async function initDB() {
 
     CREATE INDEX IF NOT EXISTS idx_leituras_dispositivo_datahora
       ON leituras(dispositivo_id, data_hora DESC);
+
+    CREATE TABLE IF NOT EXISTS recomendacoes (
+      id SERIAL PRIMARY KEY,
+      dispositivo_id VARCHAR(100) NOT NULL,
+      recomendacao JSONB NOT NULL,
+      motivo TEXT,
+      data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_recomendacoes_dispositivo
+      ON recomendacoes(dispositivo_id, data_hora DESC);
   `;
 
   await pool.query(createTableQuery);
@@ -194,4 +203,3 @@ initDB()
     console.error("Falha ao inicializar banco de dados:", err);
     process.exit(1);
   });
-
