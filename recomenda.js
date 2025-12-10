@@ -24,6 +24,15 @@ router.get('/:dispositivo_id', async (req, res) => {
     const row = q.rows[0];
 
     if (!row || row.cnt_temp === 0) {
+      // Se não tem leitura recente
+      const textoSemDados = "⚠ Sem leituras recentes. Verifique o sensor ou envie dados de teste.";
+
+      // Se pediu em formato plain, devolve só texto
+      if (req.query.format === 'plain') {
+        return res.send(textoSemDados);
+      }
+
+      // JSON padrão
       return res.json({
         temp_media: null,
         recomendacoes: [
@@ -60,18 +69,37 @@ router.get('/:dispositivo_id', async (req, res) => {
       motivos.push(`pH ${ph.toFixed(2)}`);
     }
 
-    await pool.query(
-      `INSERT INTO recomendacoes (dispositivo_id, recomendacao, motivo)
-       VALUES ($1, $2, $3)`,
-      [id, JSON.stringify(recomendacoes), motivos.join('; ')]
-    );
+    // MONTA TEXTO FINAL PARA O APP INVENTOR (uma recomendação por linha)
+    let linhas = [];
+    linhas.push(`Temperatura média (24h): ${temp.toFixed(2)}°C`);
+    if (ox !== null) linhas.push(`Oxigênio médio (24h): ${ox.toFixed(2)} mg/L`);
+    if (ph !== null) linhas.push(`pH médio (24h): ${ph.toFixed(2)}`);
+    linhas.push(""); // linha em branco
 
+    if (recomendacoes.length === 0) {
+      linhas.push("Sem recomendações específicas no momento. Manter monitoramento.");
+    } else {
+      linhas.push("Recomendações para o piscicultor:");
+      recomendacoes.forEach(r => {
+        linhas.push("• " + r.texto);
+      });
+    }
+
+    const textoFinal = linhas.join("\n");
+
+    // Se URL contiver ?format=plain → devolve só o texto (mais fácil pro App Inventor)
+    if (req.query.format === 'plain') {
+      return res.send(textoFinal);
+    }
+
+    // JSON padrão (caso queira usar no futuro com outro frontend)
     return res.json({
       temp_media: temp,
       ox_media: ox,
       ph_media: ph,
       recomendacoes,
-      motivos
+      motivos,
+      texto: textoFinal   // também manda o texto no JSON
     });
 
   } catch (err) {
