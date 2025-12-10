@@ -18,7 +18,7 @@ router.get('/:dispositivo_id', async (req, res) => {
         COUNT(ph)          AS cnt_ph
       FROM leituras
       WHERE dispositivo_id = $1
-        AND data_hora > NOW() - INTERVAL '24 hours';
+        AND data_hora > NOW() - INTERVAL '30 days';
     `, [id]);
 
     const row = q.rows[0];
