@@ -1,4 +1,7 @@
 // recomenda.js
+// Rota de recomendações para piscicultura Engorda 4.0
+// Agora usando TODO o histórico do dispositivo (sem limite de 24h)
+
 const express = require('express');
 const router = express.Router();
 const pool = require('./db');
@@ -17,26 +20,23 @@ router.get('/:dispositivo_id', async (req, res) => {
         COUNT(oxigenio)    AS cnt_ox,
         COUNT(ph)          AS cnt_ph
       FROM leituras
-      WHERE dispositivo_id = $1
-        AND data_hora > NOW() - INTERVAL '30 days';
+      WHERE dispositivo_id = $1;
     `, [id]);
 
     const row = q.rows[0];
 
+    // Se não há nenhuma temperatura registrada para esse dispositivo
     if (!row || row.cnt_temp === 0) {
-      // Se não tem leitura recente
-      const textoSemDados = "⚠ Sem leituras recentes. Verifique o sensor ou envie dados de teste.";
+      const textoSemDados = "⚠ Nenhuma leitura encontrada para este tanque. Verifique o sensor ou o dispositivo_id.";
 
-      // Se pediu em formato plain, devolve só texto
       if (req.query.format === 'plain') {
         return res.send(textoSemDados);
       }
 
-      // JSON padrão
       return res.json({
         temp_media: null,
         recomendacoes: [
-          { tipo: "info", texto: "Sem leituras recentes. Verifique o sensor." }
+          { tipo: "info", texto: "Nenhuma leitura encontrada para este tanque." }
         ]
       });
     }
@@ -48,36 +48,40 @@ router.get('/:dispositivo_id', async (req, res) => {
     const recomendacoes = [];
     const motivos = [];
 
-    // --- regras (simples) ---
+    // --- regras de decisão (simples) baseadas em temperatura, oxigênio e pH ---
+
+    // Temperatura
     if (temp < 24) {
-      recomendacoes.push({ tipo: 'alimentacao', texto: 'Temperatura baixa — reduzir alimentação.' });
-      motivos.push(`Temp ${temp.toFixed(2)}°C`);
+      recomendacoes.push({ tipo: 'alimentacao', texto: 'Temperatura média baixa — reduzir oferta de ração e observar consumo.' });
+      motivos.push(`Temp média ${temp.toFixed(2)}°C`);
     } else if (temp <= 30) {
-      recomendacoes.push({ tipo: 'alimentacao', texto: 'Temperatura ideal — manter rotina.' });
+      recomendacoes.push({ tipo: 'alimentacao', texto: 'Temperatura média na faixa ideal — manter rotina de arraçoamento.' });
     } else {
-      recomendacoes.push({ tipo: 'aeracao', texto: 'Temperatura alta — aumentar aeração.' });
-      motivos.push(`Temp ${temp.toFixed(2)}°C`);
+      recomendacoes.push({ tipo: 'aeracao', texto: 'Temperatura média alta — aumentar aeração e monitorar mortalidade.' });
+      motivos.push(`Temp média ${temp.toFixed(2)}°C`);
     }
 
+    // Oxigênio dissolvido
     if (ox !== null && ox < 5) {
-      recomendacoes.push({ tipo: 'aeracao', texto: 'Oxigênio baixo — acionar aeradores.' });
-      motivos.push(`O2 ${ox.toFixed(2)} mg/L`);
+      recomendacoes.push({ tipo: 'aeracao', texto: 'Oxigênio médio baixo — acionar aeradores, principalmente à noite e ao amanhecer.' });
+      motivos.push(`O2 médio ${ox.toFixed(2)} mg/L`);
     }
 
+    // pH da água
     if (ph !== null && (ph < 6.5 || ph > 9.0)) {
-      recomendacoes.push({ tipo: 'qualidade', texto: `pH fora do ideal: ${ph.toFixed(2)}` });
-      motivos.push(`pH ${ph.toFixed(2)}`);
+      recomendacoes.push({ tipo: 'qualidade', texto: `pH médio fora do ideal (${ph.toFixed(2)}) — avaliar calagem ou renovação parcial da água.` });
+      motivos.push(`pH médio ${ph.toFixed(2)}`);
     }
 
-    // MONTA TEXTO FINAL PARA O APP INVENTOR (uma recomendação por linha)
+    // Monta texto "amigável" para o App Inventor (plain text)
     let linhas = [];
-    linhas.push(`Temperatura média (24h): ${temp.toFixed(2)}°C`);
-    if (ox !== null) linhas.push(`Oxigênio médio (24h): ${ox.toFixed(2)} mg/L`);
-    if (ph !== null) linhas.push(`pH médio (24h): ${ph.toFixed(2)}`);
+    linhas.push(`Temperatura média (histórico): ${temp.toFixed(2)}°C`);
+    if (ox !== null) linhas.push(`Oxigênio médio (histórico): ${ox.toFixed(2)} mg/L`);
+    if (ph !== null) linhas.push(`pH médio (histórico): ${ph.toFixed(2)}`);
     linhas.push(""); // linha em branco
 
     if (recomendacoes.length === 0) {
-      linhas.push("Sem recomendações específicas no momento. Manter monitoramento.");
+      linhas.push("Sem recomendações específicas no momento. Manter monitoramento de rotina.");
     } else {
       linhas.push("Recomendações para o piscicultor:");
       recomendacoes.forEach(r => {
@@ -87,19 +91,19 @@ router.get('/:dispositivo_id', async (req, res) => {
 
     const textoFinal = linhas.join("\n");
 
-    // Se URL contiver ?format=plain → devolve só o texto (mais fácil pro App Inventor)
+    // Caso ?format=plain → devolve só texto (para App Inventor)
     if (req.query.format === 'plain') {
       return res.send(textoFinal);
     }
 
-    // JSON padrão (caso queira usar no futuro com outro frontend)
+    // JSON padrão (para uso futuro em outras interfaces)
     return res.json({
       temp_media: temp,
       ox_media: ox,
       ph_media: ph,
       recomendacoes,
       motivos,
-      texto: textoFinal   // também manda o texto no JSON
+      texto: textoFinal
     });
 
   } catch (err) {
@@ -108,5 +112,5 @@ router.get('/:dispositivo_id', async (req, res) => {
   }
 });
 
-// EXPORTA APENAS O ROUTER (IMPORTANTE!!)
+// EXPORTA APENAS O ROUTER
 module.exports = router;
