@@ -1,12 +1,12 @@
 // recomenda.js
 // Rota de recomendações para piscicultura Engorda 4.0
-// Agora usando TODO o histórico do dispositivo (sem limite de 24h)
+// Usa TODO o histórico do dispositivo (sem limite de dias/horas)
 
 const express = require('express');
 const router = express.Router();
 const pool = require('./db');
 
-// ROTA PRINCIPAL /recomendacoes/:id
+// ROTA PRINCIPAL /recomendacoes/:dispositivo_id
 router.get('/:dispositivo_id', async (req, res) => {
   const id = req.params.dispositivo_id;
 
@@ -48,32 +48,47 @@ router.get('/:dispositivo_id', async (req, res) => {
     const recomendacoes = [];
     const motivos = [];
 
-    // --- regras de decisão (simples) baseadas em temperatura, oxigênio e pH ---
+    // --- Regras simples de manejo ---
 
-    // Temperatura
+    // Temperatura média do histórico
     if (temp < 24) {
-      recomendacoes.push({ tipo: 'alimentacao', texto: 'Temperatura média baixa — reduzir oferta de ração e observar consumo.' });
+      recomendacoes.push({
+        tipo: 'alimentacao',
+        texto: 'Temperatura média baixa — reduzir oferta de ração e observar consumo (peixes com metabolismo mais lento).'
+      });
       motivos.push(`Temp média ${temp.toFixed(2)}°C`);
     } else if (temp <= 30) {
-      recomendacoes.push({ tipo: 'alimentacao', texto: 'Temperatura média na faixa ideal — manter rotina de arraçoamento.' });
+      recomendacoes.push({
+        tipo: 'alimentacao',
+        texto: 'Temperatura média na faixa ideal — manter rotina de arraçoamento e monitoramento diário.'
+      });
     } else {
-      recomendacoes.push({ tipo: 'aeracao', texto: 'Temperatura média alta — aumentar aeração e monitorar mortalidade.' });
+      recomendacoes.push({
+        tipo: 'aeracao',
+        texto: 'Temperatura média alta — aumentar aeração, evitar superalimentação e monitorar sinais de estresse.'
+      });
       motivos.push(`Temp média ${temp.toFixed(2)}°C`);
     }
 
-    // Oxigênio dissolvido
+    // Oxigênio dissolvido médio
     if (ox !== null && ox < 5) {
-      recomendacoes.push({ tipo: 'aeracao', texto: 'Oxigênio médio baixo — acionar aeradores, principalmente à noite e ao amanhecer.' });
+      recomendacoes.push({
+        tipo: 'aeracao',
+        texto: 'Oxigênio dissolvido médio abaixo de 5 mg/L — acionar aeradores, principalmente à noite e ao amanhecer.'
+      });
       motivos.push(`O2 médio ${ox.toFixed(2)} mg/L`);
     }
 
-    // pH da água
+    // pH médio
     if (ph !== null && (ph < 6.5 || ph > 9.0)) {
-      recomendacoes.push({ tipo: 'qualidade', texto: `pH médio fora do ideal (${ph.toFixed(2)}) — avaliar calagem ou renovação parcial da água.` });
+      recomendacoes.push({
+        tipo: 'qualidade',
+        texto: `pH médio fora do ideal — (${ph.toFixed(2)}) — avaliar correção (calagem) ou renovação parcial da água.`
+      });
       motivos.push(`pH médio ${ph.toFixed(2)}`);
     }
 
-    // Monta texto "amigável" para o App Inventor (plain text)
+    // Monta texto amigável para o App Inventor (plain text)
     let linhas = [];
     linhas.push(`Temperatura média (histórico): ${temp.toFixed(2)}°C`);
     if (ox !== null) linhas.push(`Oxigênio médio (histórico): ${ox.toFixed(2)} mg/L`);
@@ -81,7 +96,7 @@ router.get('/:dispositivo_id', async (req, res) => {
     linhas.push(""); // linha em branco
 
     if (recomendacoes.length === 0) {
-      linhas.push("Sem recomendações específicas no momento. Manter monitoramento de rotina.");
+      linhas.push("Sem recomendações específicas no momento. Manter rotina de monitoramento e boas práticas de manejo.");
     } else {
       linhas.push("Recomendações para o piscicultor:");
       recomendacoes.forEach(r => {
@@ -91,12 +106,12 @@ router.get('/:dispositivo_id', async (req, res) => {
 
     const textoFinal = linhas.join("\n");
 
-    // Caso ?format=plain → devolve só texto (para App Inventor)
+    // Se a URL tiver ?format=plain → devolve só texto (ideal pro App Inventor)
     if (req.query.format === 'plain') {
       return res.send(textoFinal);
     }
 
-    // JSON padrão (para uso futuro em outras interfaces)
+    // Resposta JSON (para futuras integrações, dashboards, etc.)
     return res.json({
       temp_media: temp,
       ox_media: ox,
